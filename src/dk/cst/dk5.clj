@@ -12,18 +12,19 @@
 (defn fetch-tree [q]
   (fetch-json (str "https://dk5.dk/api/hierarchy?q=" q)))
 
-(defn fetch-list [q]
+(defn fetch-list [q]                                        ; currently unused
   (fetch-json (str "https://dk5.dk/api/list?q=" q)))
 
-(defn fetch-search [q]
+(defn fetch-search [q]                                      ; currently unused
   (fetch-json (str "https://dk5.dk/api/search?q=" q
                    "&limit=100&offset=0&sort=relevance&spell=dictionary")))
 
 (defn crawl
   "Crawl the dataset of dk5.dk from any entry point index `q`."
   [q & [existing-structure]]
-  (let [structure (atom (or existing-structure {}))
-        branches  (atom [])]
+  (let [structure      (atom (or existing-structure {}))
+        selected-index (atom nil)
+        branches       (atom [])]
     (println "crawling" q)
 
     ;; Saving all new indices found in a single fetch request.
@@ -33,14 +34,28 @@
     (walk/prewalk
       (fn [x]
         (when (map? x)
-          (let [{:strs [index title hasChildren]} x]
+          (let [{:strs [index title hasChildren selected]} x]
+            ;; This marker generally occurs 1 level before the value appears.
+            (when selected
+              (reset! selected-index selected))
             (when (and index title (not (get x "decommissioned")))
-              (if (get @structure index)
-                (when-not (get @structure title)
-                  (swap! structure assoc title {:title title
-                                                :index index}))
+              (cond
+                ;; Always prefer the selected index over anything existing;
+                ;; allows for correct, random traversal of the underlying data.
+                (= index @selected-index)
                 (do
-                  (swap! structure assoc index {:title title})
+                  (swap! structure assoc index title)
+                  (reset! selected-index nil))
+
+                ;; Add subcategories (same index as the selected one).
+                (get @structure index)
+                (when-not (get @structure title)
+                  (swap! structure assoc title title))
+
+                ;; Add other indices, i.e. not the selected one.
+                :else
+                (do
+                  (swap! structure assoc index title)
                   (when (and (not= index q) hasChildren)
                     (swap! branches conj index)))))))
 
@@ -62,7 +77,7 @@
 (defn proper-indices
   "Separate the proper indices in a `dk5` structure from subcategories."
   [dk5]
-  (filter #(re-matches #"[-0-9.]+" %) (keys dk5)))
+  (filter #(re-matches #"[-0-9.:]+" %) (keys dk5)))
 
 (defn write-file [f m]
   (spit f (with-out-str (pprint/write m))))
@@ -74,11 +89,13 @@
   (delay (select-keys @dk5 (proper-indices @dk5))))
 
 (def dk5-subcategories
-  (delay (apply dissoc @dk5 (proper-indices @dk5))))
+  (delay (vec (keys (apply dissoc @dk5 (proper-indices @dk5))))))
 
 (comment
-  ;; 11327 indices (counting subcategories too) as of 2024-01-03.
-  (count indices)
+  ;; 11282 indices (counting subcategories too) as of 2024-01-03.
+  (count @dk5)
+  (count @dk5-proper)
+  (count @dk5-subcategories)
 
   ;; Write everything to disk.
   (write-file "dk5.edn" @dk5)
